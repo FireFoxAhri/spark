@@ -160,7 +160,7 @@ class SingleDirectoryDataWriter(
       dataSchema = description.dataColumns.toStructType,
       context = taskAttemptContext)
 
-    statsTrackers.foreach(_.newFile(currentPath))
+    statsTrackers.foreach(_.newFile(currentPath, None))
   }
 
   override def write(record: InternalRow): Unit = {
@@ -297,7 +297,7 @@ abstract class BaseDynamicPartitionDataWriter(
       dataSchema = description.dataColumns.toStructType,
       context = taskAttemptContext)
 
-    statsTrackers.foreach(_.newFile(currentPath))
+    statsTrackers.foreach(_.newFile(currentPath, partDir))
   }
 
   /**

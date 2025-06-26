@@ -42,9 +42,15 @@ case class BasicWriteTaskStats(
     partitions: Seq[InternalRow],
     numFiles: Int,
     numBytes: Long,
-    numRows: Long)
+    numRows: Long,
+    partitionStatsMap: Map[String, PartitionStats])
   extends WriteTaskStats
 
+case class PartitionStats(
+                           numFiles: Int,
+                           numBytes: Long,
+                           numRows: Long
+                         )
 
 /**
  * Simple [[WriteTaskStatsTracker]] implementation that produces [[BasicWriteTaskStats]].
@@ -59,6 +65,8 @@ class BasicWriteTaskStatsTracker(
   private[this] var numSubmittedFiles: Int = 0
   private[this] var numBytes: Long = 0L
   private[this] var numRows: Long = 0L
+  private[this] val partitionStatsMap = mutable.Map[String, PartitionStats]()
+  private[this] val filePathPartitionMap = mutable.Map[String, String]()
 
   private[this] val submittedFiles = mutable.HashSet[String]()
 
@@ -137,9 +145,20 @@ class BasicWriteTaskStatsTracker(
     partitions.append(partitionValues)
   }
 
-  override def newFile(filePath: String): Unit = {
+  override def newFile(filePath: String, partDir: Option[String]): Unit = {
     submittedFiles += filePath
     numSubmittedFiles += 1
+
+    partDir.foreach { partDirStr =>
+      filePathPartitionMap.put(filePath, partDirStr)
+
+      partitionStatsMap.get(partDirStr) match {
+        case Some(oldStat) =>
+          partitionStatsMap.put(partDirStr, oldStat.copy(numFiles = oldStat.numFiles + 1))
+        case None =>
+          partitionStatsMap.put(partDirStr, PartitionStats(0, 0, 0))
+      }
+    }
   }
 
   override def closeFile(filePath: String): Unit = {
@@ -151,11 +170,24 @@ class BasicWriteTaskStatsTracker(
     getFileSize(filePath).foreach { len =>
       numBytes += len
       numFiles += 1
+      filePathPartitionMap.get(filePath).foreach { pd =>
+        partitionStatsMap.get(pd).foreach { oldStat =>
+          partitionStatsMap.put(pd, oldStat.copy(
+            numFiles = oldStat.numFiles + 1,
+            numBytes = oldStat.numBytes + len)
+          )
+        }
+      }
     }
   }
 
   override def newRow(filePath: String, row: InternalRow): Unit = {
     numRows += 1
+    filePathPartitionMap.get(filePath).foreach { pd =>
+      partitionStatsMap.get(pd).foreach { oldStat =>
+        partitionStatsMap.put(pd, oldStat.copy(numRows = oldStat.numRows + 1))
+      }
+    }
   }
 
   override def getFinalStats(taskCommitTime: Long): WriteTaskStats = {
@@ -174,7 +206,7 @@ class BasicWriteTaskStatsTracker(
         "or files being not immediately visible in the filesystem.")
     }
     taskCommitTimeMetric.foreach(_ += taskCommitTime)
-    BasicWriteTaskStats(partitions.toSeq, numFiles, numBytes, numRows)
+    BasicWriteTaskStats(partitions.toSeq, numFiles, numBytes, numRows, partitionStatsMap.toMap)
   }
 }
 

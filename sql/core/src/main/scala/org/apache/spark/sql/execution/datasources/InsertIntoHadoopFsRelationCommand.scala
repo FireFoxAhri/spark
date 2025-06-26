@@ -22,6 +22,7 @@ import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogTable, CatalogTablePartition}
+import org.apache.spark.sql.catalyst.catalog.CatalogStatistics
 import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
 import org.apache.spark.sql.catalyst.catalog.ExternalCatalogUtils._
 import org.apache.spark.sql.catalyst.expressions.Attribute
@@ -171,7 +172,7 @@ case class InsertIntoHadoopFsRelationCommand(
         qualifiedOutputPath
       }
 
-      val updatedPartitionPaths =
+      val (updatedPartitionPaths, stats) =
         FileFormatWriter.write(
           sparkSession = sparkSession,
           plan = child,
@@ -195,6 +196,7 @@ case class InsertIntoHadoopFsRelationCommand(
         refreshUpdatedPartitions(Set(staticPathFragment))
       } else {
         refreshUpdatedPartitions(updatedPartitionPaths)
+
       }
 
       // refresh cached files in FileIndex
@@ -203,9 +205,25 @@ case class InsertIntoHadoopFsRelationCommand(
       sparkSession.sharedState.cacheManager.recacheByPath(sparkSession, outputPath, fs)
 
       if (catalogTable.nonEmpty) {
-        CommandUtils.updateTableStats(sparkSession, catalogTable.get)
-      }
+        if (catalogTable.get.partitionColumnNames.isEmpty) {
 
+          CommandUtils.updateTableStats(sparkSession,
+            catalogTable.get.copy(stats = Some(CatalogStatistics(
+              sizeInBytes = stats("NON_PARTITION").numBytes,
+              rowCount = Some(stats("NON_PARTITION").numRows)
+            ))))
+        } else {
+
+          CommandUtils.updateTableStats(sparkSession, catalogTable.get)
+          if (updatedPartitionPaths.nonEmpty) {
+            val partitionSpecsAndStats = stats.map { case (str, stats) =>
+              (PartitioningUtils.parsePathFragment(str), stats)
+            }
+            CommandUtils.updatePartitionStats(sparkSession, catalogTable.get,
+              partitionSpecsAndStats, mode == SaveMode.Overwrite)
+          }
+        }
+      }
     } else {
       logInfo("Skipping insertion into a relation that already exists.")
     }

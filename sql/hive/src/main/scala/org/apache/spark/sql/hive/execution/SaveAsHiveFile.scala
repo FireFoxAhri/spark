@@ -37,7 +37,7 @@ import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.command.DataWritingCommand
-import org.apache.spark.sql.execution.datasources.{BucketingUtils, FileFormatWriter}
+import org.apache.spark.sql.execution.datasources.{BucketingUtils, FileFormatWriter, PartitionStats}
 import org.apache.spark.sql.hive.HiveExternalCatalog
 import org.apache.spark.sql.hive.HiveShim.{ShimFileSinkDesc => FileSinkDesc}
 import org.apache.spark.sql.hive.client.HiveVersion
@@ -55,7 +55,7 @@ private[hive] trait SaveAsHiveFile extends DataWritingCommand {
       outputLocation: String,
       customPartitionLocations: Map[TablePartitionSpec, String] = Map.empty,
       partitionAttributes: Seq[Attribute] = Nil,
-      bucketSpec: Option[BucketSpec] = None): Set[String] = {
+      bucketSpec: Option[BucketSpec] = None): (Set[String], Map[String, PartitionStats]) = {
 
     val isCompressed =
       fileSinkConf.getTableInfo.getOutputFileFormatClassName.toLowerCase(Locale.ROOT) match {

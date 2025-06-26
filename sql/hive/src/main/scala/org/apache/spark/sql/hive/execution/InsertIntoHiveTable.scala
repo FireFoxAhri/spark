@@ -34,6 +34,7 @@ import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.errors.{QueryCompilationErrors, QueryExecutionErrors}
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.command.CommandUtils
+import org.apache.spark.sql.execution.datasources.PartitioningUtils
 import org.apache.spark.sql.hive.HiveExternalCatalog
 import org.apache.spark.sql.hive.HiveShim.{ShimFileSinkDesc => FileSinkDesc}
 import org.apache.spark.sql.hive.client.HiveClientImpl
@@ -181,7 +182,7 @@ case class InsertIntoHiveTable(
       attr.withName(name.toLowerCase(Locale.ROOT))
     }
 
-    val writtenParts = saveAsHiveFile(
+    val (writtenParts, partitionStats) = saveAsHiveFile(
       sparkSession = sparkSession,
       plan = child,
       hadoopConf = hadoopConf,
@@ -317,6 +318,36 @@ case class InsertIntoHiveTable(
             isOverwrite = doHiveOverwrite,
             inheritTableSpecs = inheritTableSpecs,
             isSrcLocal = false)
+        }
+      }
+      val partitionsTrackedByCatalog = sparkSession.sessionState.conf.manageFilesourcePartitions &&
+        table.partitionColumnNames.nonEmpty &&
+        table.tracksPartitionsInCatalog
+
+
+      if (partitionsTrackedByCatalog) {
+        if (numDynamicPartitions == 0 && numStaticPartitions > 0) {
+          val staticPartitionSpecs =
+            partitionStats.map { case (_, stats) => (partitionSpec, stats) }
+          CommandUtils.updatePartitionStats(sparkSession, table, staticPartitionSpecs, overwrite)
+        } else {
+          val dynamicPartitionSpecs = partitionStats.map { case (partStr, partitionStats) =>
+            val caseInsensitiveDpMap =
+              CaseInsensitiveMap(PartitioningUtils.parsePathFragment(partStr))
+
+            val updatedPartitionSpec = partition.map {
+              case (key, Some(null)) => key -> ExternalCatalogUtils.DEFAULT_PARTITION_NAME
+              case (key, Some(value)) => key -> value
+              case (key, None) if caseInsensitiveDpMap.contains(key) =>
+                key -> caseInsensitiveDpMap(key)
+              case (key, _) =>
+                throw QueryExecutionErrors.
+                  dynamicPartitionKeyNotAmongWrittenPartitionPathsError(key)
+            }
+
+            (updatedPartitionSpec, partitionStats)
+          }
+          CommandUtils.updatePartitionStats(sparkSession, table, dynamicPartitionSpecs, overwrite)
         }
       }
     } else {

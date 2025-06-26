@@ -47,7 +47,7 @@ trait WriteTaskStatsTracker {
    * Process the fact that a new file is about to be written.
    * @param filePath Path of the file into which future rows will be written.
    */
-  def newFile(filePath: String): Unit
+  def newFile(filePath: String, partDir: Option[String]): Unit
 
   /**
    * Process the fact that a file is finished to be written and closed.

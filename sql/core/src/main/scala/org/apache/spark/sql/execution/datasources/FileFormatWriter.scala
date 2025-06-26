@@ -103,7 +103,7 @@ object FileFormatWriter extends Logging {
       bucketSpec: Option[BucketSpec],
       statsTrackers: Seq[WriteJobStatsTracker],
       options: Map[String, String])
-    : Set[String] = {
+    : (Set[String], Map[String, PartitionStats]) = {
 
     val job = Job.getInstance(hadoopConf)
     job.setOutputKeyClass(classOf[Void])
@@ -270,8 +270,45 @@ object FileFormatWriter extends Logging {
       processStats(description.statsTrackers, ret.map(_.summary.stats), duration)
       logInfo(s"Finished processing stats for write job ${description.uuid}.")
 
+      val groupedPartitionStats: Map[String, PartitionStats] = {
+        if (description.partitionColumns.isEmpty) {
+          val allStats = ret.flatMap(_.summary.stats
+              .map {
+                case stats: BasicWriteTaskStats => stats
+                case _ => null
+              })
+            .filter(_ != null)
+          Map("NON_PARTITION" -> PartitionStats(
+            numFiles = allStats.map(_.numFiles).sum,
+            numBytes = allStats.map(_.numBytes).sum,
+            numRows = allStats.map(_.numRows).sum
+          ))
+        } else {
+          ret.flatMap(_.summary.stats
+              .flatMap {
+                case stats: BasicWriteTaskStats => stats.partitionStatsMap.toList
+                case _ => Nil
+              })
+            .groupBy(_._1)
+            .map {
+              case (key, statsList) =>
+                val sumFiles = statsList.map(_._2.numFiles).sum
+                val sumBytes = statsList.map(_._2.numBytes).sum
+                val sumRows = statsList.map(_._2.numRows).sum
+
+                key -> PartitionStats(
+                  numFiles = sumFiles,
+                  numBytes = sumBytes,
+                  numRows = sumRows
+                )
+            }
+        }
+      }
+
       // return a set of all the partition paths that were updated during this job
-      ret.map(_.summary.updatedPartitions).reduceOption(_ ++ _).getOrElse(Set.empty)
+      val partitionPathsSet =
+        ret.map(_.summary.updatedPartitions).reduceOption(_ ++ _).getOrElse(Set.empty)
+      (partitionPathsSet, groupedPartitionStats)
     } catch { case cause: Throwable =>
       logError(s"Aborting job ${description.uuid}.", cause)
       committer.abortJob(job)

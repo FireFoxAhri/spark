@@ -20,14 +20,16 @@ package org.apache.spark.sql.execution.command
 import java.net.URI
 
 import scala.collection.mutable
+import scala.concurrent.duration.MILLISECONDS
 import scala.util.control.NonFatal
 
 import org.apache.hadoop.fs.{FileSystem, Path, PathFilter}
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.{SparkSession}
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{CatalogStatistics, CatalogTable, CatalogTableType}
+import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.plans.logical._
@@ -35,6 +37,7 @@ import org.apache.spark.sql.catalyst.util.{ArrayData, GenericArrayData}
 import org.apache.spark.sql.errors.QueryCompilationErrors
 import org.apache.spark.sql.execution.QueryExecution
 import org.apache.spark.sql.execution.datasources.{DataSourceUtils, InMemoryFileIndex}
+import org.apache.spark.sql.execution.datasources.PartitionStats
 import org.apache.spark.sql.internal.{SessionState, SQLConf}
 import org.apache.spark.sql.types._
 
@@ -64,10 +67,46 @@ object CommandUtils extends Logging {
         catalog.alterTableStats(table.identifier, Some(newStats))
       }
     } else if (table.stats.nonEmpty) {
-      catalog.alterTableStats(table.identifier, None)
+      catalog.alterTableStats(table.identifier, table.stats)
     } else {
       // In other cases, we still need to invalidate the table relation cache.
       catalog.refreshTable(table.identifier)
+    }
+  }
+
+  // Alter partitions
+  def updatePartitionStats(
+                       spark: SparkSession,
+                       table: CatalogTable,
+                       partitionSpecsAndStats: Map[TablePartitionSpec, PartitionStats],
+                       isOverwrite: Boolean = true): Unit = {
+    val now = MILLISECONDS.toSeconds(System.currentTimeMillis())
+    val NUM_ROWS = "numRows"
+    val DDL_TIME = "transient_lastDdlTime"
+
+    val parts = partitionSpecsAndStats.map { case (partitionSpec, stats) =>
+      val partitionInfo = spark.sessionState.catalog
+        .getPartition(table.identifier, partitionSpec)
+      val (newParams, newStats) = {
+        val numRows = if (isOverwrite) {
+          stats.numRows
+        } else {
+          val oldParams = partitionInfo.parameters
+          oldParams.getOrElse(NUM_ROWS, "0").toLong + stats.numRows
+        }
+
+        (Map(NUM_ROWS -> numRows.toString, DDL_TIME -> now.toString),
+          partitionInfo.stats.map(_.copy(rowCount = Some(numRows))))
+      }
+
+      partitionInfo.copy(
+        parameters = newParams,
+        stats = newStats
+      )
+    }.toSeq
+
+    if (parts.nonEmpty) {
+      spark.sessionState.catalog.alterPartitions(table.identifier, parts)
     }
   }
 

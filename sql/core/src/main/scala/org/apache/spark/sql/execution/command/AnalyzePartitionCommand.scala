@@ -111,7 +111,11 @@ case class AnalyzePartitionCommand(
     val newPartitions = partitions.zipWithIndex.flatMap { case (p, idx) =>
       val newRowCount = rowCounts.get(p.spec)
       val newStats = CommandUtils.compareAndGetNewStats(p.stats, sizes(idx), newRowCount)
-      newStats.map(_ => p.copy(stats = newStats))
+      val newParameters = newRowCount match {
+        case Some(value) => p.parameters ++ Map("numRows" -> value.toString)
+        case None => p.parameters
+      }
+      newStats.map(_ => p.copy(stats = newStats, parameters = newParameters))
     }
 
     if (newPartitions.nonEmpty) {
